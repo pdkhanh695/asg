@@ -1,0 +1,62 @@
+Parameters:
+  LatestLinuxAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+
+Resources: 
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones: 
+        Fn::GetAZs: 
+          Ref: "AWS::Region"
+      LaunchConfigurationName:
+        Ref: LaunchConfig
+      DesiredCapacity: '3'
+      MinSize: '1'
+      MaxSize: '4'
+    CreationPolicy:
+      ResourceSignal:
+        Count: '3'
+        Timeout: PT5M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: '1'
+        MaxBatchSize: '2' 
+        # house much time to wait signal
+        PauseTime: PT1M
+        WaitOnResourceSignal: 'true'
+        # We can suspend processes during update 
+        SuspendProcesses: [
+          HealthCheck,
+          ScheduledActions, 
+          AZRebalance
+        ]
+          
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Metadata: 
+      Files: 
+        "/var/www/html/index.html":
+          content: !Sub |
+            echo "Phandinhkhanh edit cfn-helper from $(hostname -f)" > /var/www/html/index.html
+            echo "Healthy" > /var/www/html/health.html
+    Properties:
+      ImageId: !Ref LatestLinuxAmiId
+      InstanceType: t2.micro
+      UserData:
+        "Fn::Base64":
+          !Sub |
+            #!/bin/bash -xe
+            yum update -y
+            yum install -y httpd
+            systemctl start httpd
+            systemctl enable httpd
+            yum update -y aws-cfn-bootstrap
+            # Start cfn-init
+            /opt/aws/bin/cfn-init -s ${AWS::StackId} -r LaunchConfig --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
+            # Start up the cfn-hup daemon to listen for changes to the EC2 instance metadata
+            /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource AutoScalingGroup --region ${AWS::Region}
+
+            
